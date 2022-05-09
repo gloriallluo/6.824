@@ -20,12 +20,13 @@ cat mr-out-* | sort | more
 
 ```sh
 cd src/main
-sh test-mr-many.sh
+sh test-mr.sh
+sh test-mr-many.sh <NumTest>
 ```
 
 ## Todo
 
-- [ ] Lab1
+- [x] Lab1
 - [ ] Lab2
 - [ ] Lab3
 - [ ] Lab4

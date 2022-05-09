@@ -48,27 +48,12 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// get a WorkerId
 	worker.register()
-
-	wg := sync.WaitGroup{}
-	wg.Add(1)
-	// go worker.heartbeat(&wg)
-	go worker.doTasks(&wg)
-	wg.Wait()
+	worker.work()
 }
-
-// some functions inquiring worker's inner state
 
 func (w *workerImpl) register() { w.callRegister() }
 
-func (w *workerImpl) heartbeat(wg *sync.WaitGroup) {
-	defer wg.Done()
-	for {
-		time.Sleep(500 * time.Millisecond)
-	}
-}
-
-func (w *workerImpl) doTasks(wg *sync.WaitGroup) {
-	defer wg.Done()
+func (w *workerImpl) work() {
 	prev := Task{Name: "none"}
 	var next Task
 	for {
@@ -84,11 +69,9 @@ func (w *workerImpl) doTasks(wg *sync.WaitGroup) {
 			}
 			prev = next
 		case None:
-			log.Printf("Worker got None, exit")
 			prev = Task{Name: "none"}
 			break
 		case Wait:
-			log.Printf("Worker got Wait, sleep")
 			prev = Task{Name: "none"}
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -96,7 +79,6 @@ func (w *workerImpl) doTasks(wg *sync.WaitGroup) {
 }
 
 func (w *workerImpl) doMap(id TaskId, file string) {
-	log.Printf("Map task #%v: input file %v", id, file)
 	content, err := ioutil.ReadFile(file)
 	if err != nil {
 		log.Fatalf("Error occurred opening input file: %v", err)
@@ -109,7 +91,7 @@ func (w *workerImpl) doMap(id TaskId, file string) {
 	encs := make([]*json.Encoder, w.nr)
 
 	for i := 0; i < w.nr; i++ {
-		n := fmt.Sprintf("mr-tmp/mr-%d-%d", id, i)
+		n := fmt.Sprintf("mr-%d-%d", id, i)
 		files[i], err = os.Create(n)
 		if err != nil {
 			log.Fatalf("Error occurred creating intermediate files: %v", err)
@@ -132,7 +114,6 @@ func (w *workerImpl) doMap(id TaskId, file string) {
 
 func (w *workerImpl) doReduce(id TaskId) {
 	oname := fmt.Sprintf("mr-out-%d", id)
-	log.Printf("Reduce task #%v, output file %v", id, oname)
 	fout, err := os.Create(oname)
 	if err != nil {
 		log.Fatalf("Error occurred creating output file: %v", err)
@@ -143,7 +124,7 @@ func (w *workerImpl) doReduce(id TaskId) {
 	kvs := make(map[string][]string)
 
 	for i := 0; i < w.nm; i++ {
-		iname := fmt.Sprintf("mr-tmp/mr-%d-%d", i, id)
+		iname := fmt.Sprintf("mr-%d-%d", i, id)
 		fin, err := os.Open(iname)
 		if err != nil {
 			log.Fatalf("Error occurred opening itermediate result: %v", err)
@@ -182,9 +163,8 @@ func (w *workerImpl) callRegister() {
 		w.id = r.Id
 		w.nm = r.NMap
 		w.nr = r.NReduce
-		log.Printf("Registered, got WorkerId %v", w.id)
 	} else {
-		log.Fatalf("Something wrong happened during register")
+		log.Panicf("Something wrong happened during register")
 	}
 }
 
@@ -197,6 +177,7 @@ func (w *workerImpl) callGetTask(prev Task, next *Task) GetTaskRes {
 		}
 		return r.Result
 	}
+	// the RPC call failed, assume the coordinator exited
 	return None
 }
 
@@ -210,7 +191,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
-		log.Fatal("dialing:", err)
+		log.Fatalf("dialing error: %v", err)
 	}
 	defer c.Close()
 
@@ -218,7 +199,5 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	if err == nil {
 		return true
 	}
-
-	fmt.Printf("RPC call got error: %v", err)
 	return false
 }

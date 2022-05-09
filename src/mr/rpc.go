@@ -22,9 +22,9 @@ type RegisterReply struct {
 type GetTaskRes int
 
 const (
-	Ok   GetTaskRes = 0
-	Wait GetTaskRes = 1
-	None GetTaskRes = 2
+	Ok GetTaskRes = iota
+	Wait
+	None
 )
 
 type GetTaskArgs struct {

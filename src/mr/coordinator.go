@@ -7,6 +7,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 // XXX: issue tasks in a pipelined fashion
@@ -17,11 +18,13 @@ const (
 )
 
 type Coordinator struct {
-	mu      sync.Mutex
-	phase   int
-	nw      WorkerId // #workers
-	nm      int      // #maps
-	nr      int      // #reduces
+	mu    sync.Mutex
+	phase int
+	nw    WorkerId // #workers
+	nm    int      // #maps
+	nr    int      // #reduces
+	// unfinished tasks: TaskId -> WorkerId
+	// -1 means the task is not assigned yet
 	maps    map[TaskId]WorkerId
 	reduces map[TaskId]WorkerId
 	files   []string
@@ -35,6 +38,7 @@ func (c *Coordinator) Register(args *RegisterArgs, reply *RegisterReply) error {
 	reply.Id = c.nw
 	reply.NMap = c.nm
 	reply.NReduce = c.nr
+	log.Printf("New Worker %v", c.nw)
 	c.nw++
 	return nil
 }
@@ -44,14 +48,26 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	defer c.mu.Unlock()
 
 	// handle finished task
-	c.handleFinishedTask(args.Prev)
+	c.handleFinishedTask(args.Prev, args.Id)
 
 	// get a new task
 	switch c.phase {
 	case MapPhase:
-		reply.Result = c.getMapTask(args.Id, &reply.Task)
+		var task Task
+		reply.Result = c.getMapTask(args.Id, &task)
+		if reply.Result == Ok {
+			log.Printf("Map task #%d -> %d", task.Id, args.Id)
+			reply.Task = task
+			go c.setTimeout(task)
+		}
 	case ReducePhase:
-		reply.Result = c.getReduceTask(args.Id, &reply.Task)
+		var task Task
+		reply.Result = c.getReduceTask(args.Id, &task)
+		if reply.Result == Ok {
+			log.Printf("Reduce task #%d -> %d", task.Id, args.Id)
+			reply.Task = task
+			go c.setTimeout(task)
+		}
 	case DonePhase:
 		reply.Result = None
 	default:
@@ -60,20 +76,21 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	return nil
 }
 
-func (c *Coordinator) handleFinishedTask(task Task) {
-	log.Printf("Coordinator got one finished task %v", task)
+func (c *Coordinator) handleFinishedTask(task Task, workerId WorkerId) {
 	switch task.Name {
 	case "map":
+		log.Printf("Map task #%d ok", task.Id)
 		delete(c.maps, task.Id)
 		if len(c.maps) == 0 {
 			c.phase = ReducePhase
-			log.Printf("Coordinator turns to ReducePhase")
+			log.Printf("Coordinator -> ReducePhase")
 		}
 	case "reduce":
+		log.Printf("Reduce task #%d ok", task.Id)
 		delete(c.reduces, task.Id)
 		if len(c.reduces) == 0 {
 			c.phase = DonePhase
-			log.Printf("Coordinator turns to DonePhase")
+			log.Printf("Coordinator -> DonePhase")
 		}
 	case "none":
 	default:
@@ -107,6 +124,26 @@ func (c *Coordinator) getReduceTask(worker WorkerId, task *Task) GetTaskRes {
 		return None
 	} else {
 		return Wait
+	}
+}
+
+func (c *Coordinator) setTimeout(task Task) {
+	time.Sleep(10 * time.Second)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch task.Name {
+	case "map":
+		if _, ok := c.maps[task.Id]; ok {
+			log.Printf("Map task #%d: timeout", task.Id)
+			c.maps[task.Id] = NoWorker
+		}
+	case "reduce":
+		if _, ok := c.reduces[task.Id]; ok {
+			log.Printf("Reduce task #%d: timeout", task.Id)
+			c.reduces[task.Id] = NoWorker
+		}
+	default:
+		panic("unexpected task name")
 	}
 }
 
@@ -159,6 +196,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		c.reduces[task] = NoWorker
 	}
 	log.Printf("Coordinator start, there are %d map tasks and %d reduce tasks", c.nm, c.nr)
+	log.Printf("Coordinator -> MapPhase")
 	c.files = files
 
 	c.server()
